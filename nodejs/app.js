@@ -52,8 +52,7 @@ app.get("/messages", async (req, res) => {
             const id = element[0];
             const default_text = element[1];
 
-            // todo: cache this value to prevent multiple lookups
-            const preferred_text = await getState(id) || default_text;
+            const preferred_text = prefered_text_map[id] || await getState(id) || default_text;
             prefered_text_map[id] = preferred_text;
         }
 
