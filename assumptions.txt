@@ -1,0 +1,3 @@
+This file lists assumptions that I had to make during this test. As we all know software has limitations and writting simple code can sometimes cause certain use cases to not be supported.
+
+1)
