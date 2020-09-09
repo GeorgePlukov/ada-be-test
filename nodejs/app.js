@@ -36,38 +36,46 @@ const getStateById = (id) => new Promise((resolve, reject) => {
 
 // Return all messages
 app.get("/messages", async (req, res) => {
+    try {
+        const messages = await getMessages();
+        const fixed_messages = [];
 
-    const messages = await getMessages();
-    const fixed_messages = [];
+        for (let message of messages) {
+            const replaceable_items = message.match(curly_braces_regex);
 
-    for (let message of messages) {
-        const replaceable_items = message.match(curly_braces_regex);
+            const id_default_tuples = replaceable_items.map((str) => {
+                return str.split("|");
+            });
 
-        const id_default_tuples = replaceable_items.map((str) => {
-            return str.split("|");
-        });
+            const preferred_text_map = {};
+            for (const element of id_default_tuples) {
+                const id = element[0];
+                const default_text = element[1];
 
-        const prefered_text_map = {};
-        for (const element of id_default_tuples) {
-            const id = element[0];
-            const default_text = element[1];
+                const preferred_text = preferred_text_map[id] || await getStateById(id) || default_text;
+                preferred_text_map[id] = preferred_text;
+            }
 
-            const preferred_text = prefered_text_map[id] || await getStateById(id) || default_text;
-            prefered_text_map[id] = preferred_text;
+            // go through our items to be replaced and insert the text from preferred text map
+            id_default_tuples.map((tuple, index) => {
+                const text_to_replace_regex = `\{${tuple[0]}|${tuple[1]}\}`;
+                const id = id_default_tuples[index][0];
+                message = message
+                  .split(text_to_replace_regex)
+                  .join(preferred_text_map[id]);
+            });
+
+            fixed_messages.push(message);
         }
+        res.send(fixed_messages);
+    } catch (error) {
+        // don't expose the error to the client side in case it contains sensitive information
+        res.status(503).send('Internal server error');
 
-        // go through our items to be replaced and insert the text in our prefered text map 
-        id_default_tuples.map((tuple, index) => {
-            const text_to_replace_regex = `\{${tuple[0]}|${tuple[1]}\}`;
-            const id = id_default_tuples[index][0];
-            message = message
-              .split(text_to_replace_regex)
-              .join(prefered_text_map[id]);
-        });
-
-        fixed_messages.push(message);
+        // log error so that we can monitor from our internal logs
+        console.error(error);
+        return;
     }
-    res.send(fixed_messages);
 })
 
 // todo: prevent against sql injection attacks using prepared statements
@@ -98,10 +106,11 @@ const getBlocks = (a_id) =>
         }
     );
   });
-const joinedRows = () =>
+
+const getAnswersWithBlocks = () =>
   new Promise((resolve, reject) => {
     db.all(
-      "select * from answers a inner join blocks b on a.id = b.answer_id",
+      "select  a.id, a.title, b.content from answers a inner join blocks b on a.id = b.answer_id",
       (err, rows_raw) => {
         if (err) {
           reject(err);
@@ -114,46 +123,70 @@ const joinedRows = () =>
 // Extract text from all top level fields and recursively iterate through
 // any nested objects (arrays included)
 const deepExtractText = (content) => {
-    console.log(content)
     let extracted_text = '';
     for (const [key, value] of Object.entries(content)) {
+        extracted_text += value.title || '';
         if (key === 'type') {
             continue;
         } else if (value === Object(value) ) {
-            extracted_text += extractText(value);
+            extracted_text += deepExtractText(value);
         } else {
             extracted_text += value;
         }
     }
-    return extracted_text;
+    return extracted_text.toLowerCase();
 };
 
 // Search for answers
-app.post("/search", (req, res) => {
+app.post("/search", async (req, res) => {
     let query = req.body.query;
+
     if (!query) {
+        console.error('Query is a required parameter')
         res.status(400).send('Query is a required parameter');
         return
     }
+    try {
 
-    let jr = await joinedRows();
-    const query_regex = new RegExp(query, 'g');
+        // normalize and split into words
+        const queryWords = query.toLowerCase().split(' ');
 
-    // todo: potential optimization, pre search before parsing json so that we only parse on potential positives
-    jr = jr.map((row) => {
-        if (row.content) {
-            row.content = JSON.parse(row.content);
-        }
-        return row;
-    });
-    
-    // aggregate all the text from the title and the content sub fields
-    const searchableText = jr.map((row) => deepExtractText(row));
-    const searchHits = searchableText.map((text) => text.match(query_regex));
-    const index = searchHits.reduce((acc, hit, index) => hit ? index : acc, -1);
-    const result = jr[index] || [];
+        let answersWithBlocks = await getAnswersWithBlocks();
 
-    res.status(200).send(result)
+        // todo: potential optimization, pre search before parsing json so that we only parse potential positives
+        // this would give false positives for strings contained within object keys and the type field but could
+        // significantly reduce the amount of times JSON.parse is called
+        const parsedAnswersWithBlocks = answersWithBlocks.map((row) => {
+            if (row.content) {
+                row.content = JSON.parse(row.content);
+            }
+            return row;
+        });
+
+        // aggregate all the text from the title and the nested content objects
+        const searchableText = parsedAnswersWithBlocks.map((row) => deepExtractText(row));
+
+        // To find our hits we iterate through our searchable text strings and look to see if all words appear somewhere within
+        // requirement: searching for multiple terms that **all** have to show up **somewhere** in the answer.
+        const searchHits = searchableText.map((text, index) => {
+            for (const word of queryWords) {
+                if (!text.includes(word)) {
+                    return false;
+                }
+            }
+            // If all the words have a hit return that parsed answer so we can send it back in our response
+            return parsedAnswersWithBlocks[index];
+        }).filter((hit) => hit);
+
+        res.status(200).send(searchHits)
+    } catch (error) {
+        // don't expose the error to the client side in case it contains sensitive information
+        res.status(503).send('Internal server error');
+
+        // log error so that we can monitor from our internal logs
+        console.error(error);
+        return;
+    }
 })
 
 var server = app.listen(5000, () => {

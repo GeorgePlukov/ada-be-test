@@ -1,3 +1,18 @@
 This file lists assumptions that I had to make during this test. As we all know software has limitations and writting simple code can sometimes cause certain use cases to not be supported.
 
-1)
+Messages:
+
+1) Using regex to search for items with form `{text}` means that curly braces can't really be used in another capacity within the strings. So this would fail when doing replacements on things such as code blocks or similar. When adding items to the database we should probably be careful to sanitize the `{}` characters or flag them to the user as protected.
+
+2) I assumed that the Ids present in the strings were not vulnerable to sql injection (they had been prepared somewhere within our own internal system)
+
+
+Search:
+1) I assumed that terms would be space seperated for the sake of simplicity. It would be possible to extend this to split on other characters
+
+
+General:
+1) I logged errors to console.error but I assume normally there would be some sort of logging framework to submit them too
+
+
+I left a decent amount of code comments so hopefully I didn't miss anything too large!
